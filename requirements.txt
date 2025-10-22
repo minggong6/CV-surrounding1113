@@ -9,6 +9,8 @@ streamlit
 streamlit-image-coordinates
 torch
 numpy
+os
+cv2
 scipy
 scikit-image
 nibabel
