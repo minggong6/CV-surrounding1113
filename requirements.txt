@@ -24,6 +24,7 @@ Pillow
 kimimaro
 cloud-volume
 itk
+pip==25.2
 # Optional / better installed via conda-forge:
 # kimimaro
 # cloud-volume
