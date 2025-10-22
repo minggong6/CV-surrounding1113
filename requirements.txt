@@ -6,6 +6,8 @@
 
 # Minimal pip-installable requirements (for a modern Python >=3.8/3.9/3.10)
 streamlit
+streamlit-image-coordinates
+torch
 numpy
 scipy
 scikit-image
@@ -19,7 +21,9 @@ SimpleITK
 connected-components-3d
 imageio
 Pillow
-
+kimimaro
+cloud-volume
+itk
 # Optional / better installed via conda-forge:
 # kimimaro
 # cloud-volume

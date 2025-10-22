@@ -519,7 +519,7 @@ elif mode == '使用 SAM 2 分割':
         raw_img_data = st.session_state.raw_img_data
         H, W, Z = raw_img_data.shape
 
-        col1, col2 = st.columns([3, 1]) # 图像列更宽
+        col1, col2 = st.columns([1, 1]) # 图像列更宽
 
         with col1:
             st.subheader("图像交互区域")
@@ -544,29 +544,17 @@ elif mode == '使用 SAM 2 分割':
             value = streamlit_image_coordinates(current_slice_uint8, key="sam_image_click")
 
             # 如果用户点击了图像，记录坐标
-            #if value is not None and value != st.session_state.get("_last_click_value_ref"): # 避免重复添加同一点
-             #   coords = (value["x"], value["y"])
-              #  st.session_state.current_click_coords = coords
-              #st.session_state._last_click_value_ref = value # 存储引用以防重复点击
-               # st.info(f"已选择点: ({coords[0]}, {coords[1]})。请点击下方按钮确认前景或背景。")
+            if value is not None and value != st.session_state.get("_last_click_value_ref"): # 避免重复添加同一点
+                coords = (value["x"], value["y"])
+                st.session_state.current_click_coords = coords
+                st.session_state._last_click_value_ref = value # 存储引用以防重复点击
+                st.info(f"已选择点: ({coords[0]}, {coords[1]})。请点击下方按钮确认前景或背景。")
                 # 不需要 st.rerun()，让用户点击按钮来确认
 
             # --- 使用 Matplotlib 显示带有点的图像 ---
-            fig, ax = plt.subplots(figsize=(8, 8)) # 调整大小以便更好显示
-            ax.imshow(current_slice_uint8.T, cmap='gray', origin='lower')
-            ax.set_title(f"当前切片: {slice_idx} (已添加 {len(st.session_state.points)} 个点)")
-            ax.set_axis_off()
+           
             # 绘制已确认的点
-            for i, (point, label) in enumerate(zip(st.session_state.points, st.session_state.labels)):
-                color = 'green' if label == 1 else 'red'
-                marker = '+' if label == 1 else 'x'
-                ax.scatter(point[0], point[1], color=color, marker=marker, s=150, linewidths=3)
-                ax.text(point[0] + 5, point[1] + 5, str(i+1), color=color, fontsize=12) # 标号
-            # 绘制最新点击但未确认的点 (可选)
-            # if st.session_state.current_click_coords:
-            #    ax.scatter(st.session_state.current_click_coords[0], st.session_state.current_click_coords[1], color='yellow', marker='*', s=100)
-            ax.set_aspect('equal') # 保持比例
-            st.pyplot(fig)
+    
             # --- 结束 Matplotlib 显示 ---
 
         with col2:
