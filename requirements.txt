@@ -11,6 +11,7 @@ torch
 numpy
 os
 cv2
+pip install --upgrade pip
 scipy
 scikit-image
 nibabel
