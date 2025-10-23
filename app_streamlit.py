@@ -1,4 +1,5 @@
 # app_streamlit.py (恢复 SAM 2 点击交互 + streamlit-image-coordinates)
+# (已集成新的评分卡、评分逻辑和热力图可视化)
 
 import os
 import tempfile
@@ -78,7 +79,7 @@ if _skeleton_import_error:
 
 
 # --- Page Title ---
-st.title("胰腺癌可切除性分析 Demo")
+st.title("胰腺癌可切除性分析工具")
 
 
 # ==============================================================================
@@ -89,12 +90,36 @@ st.title("胰腺癌可切除性分析 Demo")
 # def load_dodnet_model_internal(...): # 移除
 # def run_dodnet_inference(...): # 移除 (或保留为空函数，但不被调用)
 
+
 # ==============================================================================
-# --- Cached Functions for Performance (保持不变) ---
+# --- !!! 新增：tk3.get_nii 兼容性补丁 (来自用户) !!! ---
+# ==============================================================================
+try:
+    _orig_get_nii = tk3.get_nii
+
+    def _get_nii_compat(path, *args, **kwargs):
+        if 'rotate' in kwargs:
+            try:
+                return _orig_get_nii(path, *args, **kwargs)
+            except TypeError:
+                # underlying implementation doesn't accept 'rotate'
+                kwargs.pop('rotate')
+                return _orig_get_nii(path, *args, **kwargs)
+        else:
+            return _orig_get_nii(path, *args, **kwargs)
+
+    tk3.get_nii = _get_nii_compat
+except Exception:
+    # If monkeypatching fails for some reason, continue
+    pass
+
+
+# ==============================================================================
+# --- Cached Functions for Performance (修改) ---
 # ==============================================================================
 @st.cache_data(show_spinner=False)
 def perform_full_analysis(_uploaded_file_bytes, _file_name, _contour_thickness, _contact_range, _axis, _do_2d, _do_3d, _do_skeleton, _raw_ct_bytes=None):
-    # ... (此函数内容保持不变) ...
+    # ... (此函数前半部分保持不变) ...
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = os.path.join(tmpdir, _file_name)
         with open(file_path, "wb") as f: f.write(_uploaded_file_bytes)
@@ -156,12 +181,52 @@ def perform_full_analysis(_uploaded_file_bytes, _file_name, _contour_thickness, 
                 st.warning(f"无法加载接触面图像: {e}")
 
         progress_bar.progress(1.0, text="分析完成！")
-        return results, label_map_dict_data, raw_ct_data, artery_skeleton, vein_skeleton, contact_img_data
+
+        # --- !!! 新增：评分逻辑 (来自用户) !!! ---
+        # tumor info
+        tumor_volume = None
+        try:
+            # 使用已加载的 label_map_dict_data
+            if isinstance(label_map_dict_data, dict) and "tumor" in label_map_dict_data:
+                tumor_mask = label_map_dict_data["tumor"]
+                tumor_volume = int(np.sum(np.asarray(tumor_mask) > 0))
+            elif isinstance(label_map_dict_data, dict) and "origin" in label_map_dict_data:
+                # 回退到 'origin' 
+                lbl = label_map_dict_data["origin"]
+                tumor_volume = int(np.sum(lbl == 2)) # 标签 2 = 肿瘤
+            else:
+                st.warning("无法在已加载的数据中找到 'tumor' 或 'origin' 键来计算肿瘤体积。")
+                
+        except Exception as e:
+            st.error(f"计算肿瘤体积时出错: {e}")
+            tumor_volume = None
+
+        # simple resectability scoring rule
+        score = 0.5
+        if "artery" in results["3D"] and isinstance(results["3D"]["artery"], list) and len(results["3D"]["artery"]) > 0:
+            c3a = results["3D"]["artery"][0].get("contact_ratio", 0)
+            score -= 0.3 * c3a
+        if "vein" in results["3D"] and isinstance(results["3D"]["vein"], list) and len(results["3D"]["vein"]) > 0:
+            c3v = results["3D"]["vein"][0].get("contact_ratio", 0)
+            score -= 0.15 * c3v
+        if tumor_volume is not None:
+            score -= 0.05 * np.log1p(tumor_volume)
+        score = float(max(0.0, min(1.0, score)))
+
+        if score > 0.7:
+            label = "可能可切除"
+        elif score > 0.4:
+            label = "边界性"
+        else:
+            label = "可能不可切除"
+        # --- 结束新增评分逻辑 ---
+
+        # --- !!! 修改：返回新增的 score 和 label !!! ---
+        return results, label_map_dict_data, raw_ct_data, artery_skeleton, vein_skeleton, contact_img_data, score, label
 
 # ==============================================================================
-# --- Resectability Advisor Module (保持不变) ---
+# --- !!! 替换：使用新的评分卡 (来自用户) !!! ---
 # ==============================================================================
-# ... (display_resectability_recommendation 函数不变) ...
 def display_resectability_recommendation(results):
     st.header("可切除性评估建议 (Resectability Assessment)")
 
@@ -196,10 +261,21 @@ def display_resectability_recommendation(results):
         st.markdown(f"  - **静脉最大接触比例**: `{vein_contact_ratio:.2%}`")
         st.caption("注：该建议基于 3D 接触比例。此结果仅供参考。")
 
+
+
+def display_score_card(score, label):
+    st.markdown("### 切除性评估")
+    score_color = "#FF4B4B" if score < 0.4 else ("#FFA500" if score < 0.7 else "#2ECC71")
+    st.markdown(f"""
+    <div style="border-left: 5px solid {score_color}; padding: 10px; background: #F8F9FA;">
+        <p style="font-size: 16px; margin: 0;">评分: <span style="font-weight: bold; color: {score_color}; font-size: 24px;">{score:.2f}</span></p>
+        <p style="font-size: 14px; margin: 0;">结论: {label}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ==============================================================================
 # --- 3D Surface Plotting Function (保持不变) ---
 # ==============================================================================
-# ... (make_3d_surface_plot 函数不变) ...
 @st.cache_data(show_spinner="正在生成 3D 模型...")
 def make_3d_surface_plot(_label_data_array):
     if not SKIMAGE_AVAILABLE:
@@ -330,9 +406,9 @@ def make_contact_overlay_fig(origin_data, contact_data, axis='z', slice_index=No
     ax.set_aspect('equal')
 
     legend_elements = [
-        Patch(facecolor=(0.8, 0, 0), label='肿瘤 (Tumor)'),
-        Patch(facecolor=(0, 0.6, 0.3), label='动脉/静脉轮廓 (Vessel Contour)'),
-        Patch(facecolor=(0, 0.4, 0.8), label='动脉/静脉接触 (Vessel Contact)')
+        Patch(facecolor=(0.8, 0, 0), label='肿瘤'),
+        Patch(facecolor=(0, 0.6, 0.3), label='动脉/静脉轮廓  '),
+        Patch(facecolor=(0, 0.4, 0.8), label='动脉/静脉接触  ')
     ]
     ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1))
     ax.set_title(f"接触面透视图 - 切片 {slice_idx} (轴={axis})")
@@ -401,7 +477,8 @@ if mode == '上传已分割文件':
         uploaded_bytes = uploaded_file.getvalue()
         file_name = uploaded_file.name
 
-        results, label_map_dict, raw_ct_data, artery_skeleton, vein_skeleton, contact_img_data = perform_full_analysis(
+        # --- !!! 修改：接收 score 和 label !!! ---
+        results, label_map_dict, raw_ct_data, artery_skeleton, vein_skeleton, contact_img_data, score, label = perform_full_analysis(
             uploaded_bytes,
             file_name,
             contour_thickness,
@@ -413,6 +490,44 @@ if mode == '上传已分割文件':
             _raw_ct_bytes=None # No raw CT needed unless user uploads it separately
         )
         display_resectability_recommendation(results)
+        with st.expander("点击查看详细分析数据"): st.json(results)        
+        # --- !!! 替换：显示新的评分卡 !!! ---
+
+
+        
+        # --- !!! 新增：热力图可视化 (来自用户) !!! ---
+        if "3D" in results and isinstance(results["3D"], dict):
+            
+            try:
+                import plotly.express as px
+                import pandas as pd
+                artery_data = results["3D"].get("artery", [])
+                vein_data = results["3D"].get("vein", [])
+                
+                # 检查数据是否存在，并安全地获取第一个元素的接触比例
+                artery_ratio = artery_data[0].get("contact_ratio", 0) if len(artery_data) > 0 else 0
+                vein_ratio = vein_data[0].get("contact_ratio", 0) if len(vein_data) > 0 else 0
+
+                data = {
+                    "血管类型": ["动脉", "静脉"],
+                    "接触比例": [artery_ratio, vein_ratio]
+                }
+                df = pd.DataFrame(data)
+
+                fig = px.imshow(
+                    df.pivot_table(values="接触比例", index=None, columns="血管类型"),
+                    labels=dict(x="血管类型", y="", color="接触比例"),
+                    color_continuous_scale="Viridis",
+                    title="3D 接触比例热力图"
+                )
+                fig.update_layout(width=500, height=300)
+                st.plotly_chart(fig)
+            except ImportError:
+                st.error("无法生成热力图：缺少 `plotly` 或 `pandas` 库。")
+            except Exception as e:
+                st.warning(f"3D 分析数据不足或格式错误，无法生成可视化图表: {e}")
+        # --- 结束新增热力图 ---
+
         with st.expander("点击查看详细分析数据"): st.json(results)
 
         if do_3d_render:
@@ -499,6 +614,9 @@ elif mode == '使用 SAM 2 分割':
         st.session_state.normalized_slices = {} # 缓存归一化后的切片
         st.session_state.sam_raw_file_id = raw_file.file_id if raw_file else None
         st.session_state.analysis_complete = False # 标记分析是否完成
+        # --- !! 新增：从侧边栏获取参数并存入 state !! ---
+        # (确保在点击 "开始分析" 时能获取到最新的侧边栏值)
+        st.session_state.sidebar_params = {}
 
     if raw_file and st.session_state.raw_img_data is None:
          # 只在第一次上传或更换文件时加载
@@ -519,7 +637,9 @@ elif mode == '使用 SAM 2 分割':
         raw_img_data = st.session_state.raw_img_data
         H, W, Z = raw_img_data.shape
 
-        col1, col2 = st.columns([1, 1]) # 图像列更宽
+        col1, col2 = st.columns([3, 1]) # 图像列更宽
+
+# ... (代码上文) ...
 
         with col1:
             st.subheader("图像交互区域")
@@ -527,34 +647,69 @@ elif mode == '使用 SAM 2 分割':
 
             # --- 缓存和获取当前切片 (归一化到 uint8 用于显示) ---
             if slice_idx not in st.session_state.normalized_slices:
-                current_slice_raw = raw_img_data[:, :, slice_idx]
-                # 使用与 DODnet 类似的窗口化，然后归一化到 0-255
+                current_slice_raw = raw_img_data[:, :, slice_idx] # (H, W)
+                # ... (归一化逻辑不变) ...
                 slice_normalized = np.clip(current_slice_raw, -100, 400)
                 min_norm, max_norm = np.min(slice_normalized), np.max(slice_normalized)
                 if max_norm > min_norm:
                     slice_uint8 = ((slice_normalized - min_norm) / (max_norm - min_norm) * 255).astype(np.uint8)
                 else:
                     slice_uint8 = np.zeros_like(current_slice_raw, dtype=np.uint8)
+                # 存储原始 (H, W) 切片
                 st.session_state.normalized_slices[slice_idx] = slice_uint8
-            current_slice_uint8 = st.session_state.normalized_slices[slice_idx]
-            # --- 结束切片处理 ---
+            
+            current_slice_uint8 = st.session_state.normalized_slices[slice_idx] # (H, W)
+            
+            # --- !!! 修改：创建用于显示的转置 (W, H) 图像 ---
+            # 这将用于 clicker 和 matplotlib，以确保它们一致
+            display_slice = current_slice_uint8.T  # (W, H)
+            # --- 结束修改 ---
 
             # --- 使用 streamlit-image-coordinates 进行点击交互 ---
             st.write("在下方图像上点击选择点：")
-            value = streamlit_image_coordinates(current_slice_uint8, key="sam_image_click")
+            
+            # --- !!! 修改：使用 display_slice (W, H) ---
+            value = streamlit_image_coordinates(display_slice, key="sam_image_click")
+            # --- 结束修改 ---
 
-            # 如果用户点击了图像，记录坐标
-            if value is not None and value != st.session_state.get("_last_click_value_ref"): # 避免重复添加同一点
+            # --- !!! 修改：点击逻辑 ---
+            # 现在的 (x, y) 坐标是相对于 (W, H) 图像的
+            # x 对应 H 轴, y 对应 W 轴
+            if value is not None and value != st.session_state.get("_last_click_value_ref"):
                 coords = (value["x"], value["y"])
                 st.session_state.current_click_coords = coords
-                st.session_state._last_click_value_ref = value # 存储引用以防重复点击
-                st.info(f"已选择点: ({coords[0]}, {coords[1]})。请点击下方按钮确认前景或背景。")
-                # 不需要 st.rerun()，让用户点击按钮来确认
+                st.session_state._last_click_value_ref = value 
+                st.rerun() 
+            # --- 结束点击逻辑修改 ---
+
 
             # --- 使用 Matplotlib 显示带有点的图像 ---
-           
-            # 绘制已确认的点
-    
+            fig, ax = plt.subplots(figsize=(8, 8)) 
+            
+            # --- !!! 修改：使用 display_slice (W, H) ---
+            # 这与之前的 .T 效果相同，满足“不要旋转”的要求
+            ax.imshow(display_slice, cmap='gray', origin='lower')
+            # --- 结束修改 ---
+
+            ax.set_title(f"当前切片: {slice_idx} (已添加 {len(st.session_state.points)} 个点)")
+            ax.set_axis_off()
+            
+            # --- 坐标绘制 (无需修改) ---
+            # 因为 clicker 和 imshow 图像一致，
+            # (x, y) 点 (point[0], point[1]) 会被正确绘制
+            # point[0] (x) -> H 轴, point[1] (y) -> W 轴
+            for i, (point, label) in enumerate(zip(st.session_state.points, st.session_state.labels)):
+                color = 'green' if label == 1 else 'red'
+                marker = '+' if label == 1 else 'x'
+                ax.scatter(point[0], point[1], color=color, marker=marker, s=150, linewidths=3)
+                ax.text(point[0] + 5, point[1] + 5, str(i+1), color=color, fontsize=12) 
+            
+            if st.session_state.current_click_coords:
+               ax.scatter(st.session_state.current_click_coords[0], st.session_state.current_click_coords[1], 
+                          color='yellow', marker='*', s=200, linewidths=2, edgecolors='black')
+            
+            ax.set_aspect('equal') 
+            st.pyplot(fig)
             # --- 结束 Matplotlib 显示 ---
 
         with col2:
@@ -562,15 +717,23 @@ elif mode == '使用 SAM 2 分割':
             structure_to_label = st.radio("选择要标注的结构", ('肿瘤', '动脉', '静脉'), key="sam_structure_radio")
             label_map = {'肿瘤': 'tumor', '动脉': 'artery', '静脉': 'vein'}
 
-            # --- 添加点按钮 ---
+            # --- 坐标信息 (无需修改) ---
+            if st.session_state.current_click_coords:
+                st.info(f"待确认点: ({st.session_state.current_click_coords[0]}, {st.session_state.current_click_coords[1]})")
+            else:
+                st.info("请在左侧图像上点击一个点。")
+
+            # --- 添加点按钮 (无需修改) ---
+            # 存储 (x, y) 坐标，现在它们对应 (H_coord, W_coord)
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
                 if st.button("添加前景点 (+)", key="sam_add_fg"):
                     if st.session_state.current_click_coords:
                         st.session_state.points.append(st.session_state.current_click_coords)
+                        # ... (st.rerun() 等)
                         st.session_state.labels.append(1)
-                        st.session_state.current_click_coords = None # 清除待确认点
-                        st.session_state._last_click_value_ref = None # 允许下一次点击
+                        st.session_state.current_click_coords = None 
+                        st.session_state._last_click_value_ref = None 
                         st.rerun()
                     else:
                         st.warning("请先在图像上点击选择一个点。")
@@ -578,14 +741,14 @@ elif mode == '使用 SAM 2 分割':
                  if st.button("添加背景点 (-)", key="sam_add_bg"):
                     if st.session_state.current_click_coords:
                         st.session_state.points.append(st.session_state.current_click_coords)
-                        st.session_state.labels.append(0) # 背景点标签为 0
+                        st.session_state.labels.append(0) 
                         st.session_state.current_click_coords = None
                         st.session_state._last_click_value_ref = None
                         st.rerun()
                     else:
                         st.warning("请先在图像上点击选择一个点。")
 
-            # --- 其他控制按钮 ---
+            # --- 其他控制按钮 (无需修改) ---
             if st.button("清除当前切片所有点", key="sam_clear_points"):
                 st.session_state.points = []
                 st.session_state.labels = []
@@ -598,29 +761,39 @@ elif mode == '使用 SAM 2 分割':
                     st.warning("请至少添加一个前景或背景点。")
                 else:
                     with st.spinner("SAM 正在分割当前切片..."):
-                        predictor = sam_segmenter.load_sam2_model() # 确保模型已加载
+                        predictor = sam_segmenter.load_sam2_model() 
                         if predictor:
-                            # 传递归一化的 uint8 图像给 SAM
-                            current_slice_for_sam = st.session_state.normalized_slices[slice_idx]
-
-                            mask = sam_segmenter.run_sam2_prediction(
+                            
+                            # --- !!! 修改：准备 SAM 的输入图像 ---
+                            # 我们需要 (W, H) 图像，即 display_slice
+                            # 确保我们从缓存中获取 (H, W) 并转置它
+                            current_slice_hw_uint8 = st.session_state.normalized_slices[slice_idx].T 
+                            # (上面的 current_slice_for_sam_hw 和 ...uint8 都不需要了)
+                            # --- 结束修改 ---
+                            
+                            # --- !!! 修改：调用 SAM ---
+                            # 图像是 (W, H)，点是 (H_coord, W_coord)，这现在是匹配的
+                            mask_hw = sam_segmenter.run_sam2_prediction(
                                 predictor,
-                                current_slice_for_sam,
-                                st.session_state.points,
+                                current_slice_hw_uint8, # 传递 (W, H) 图像
+                                st.session_state.points,  # 传递 (H_coord, W_coord) 坐标列表
                                 st.session_state.labels
                             )
+                            # --- 结束修改 ---
 
-                            if mask is not None:
+                            if mask_hw is not None:
+                                # mask_hw 是 (W, H)
                                 target_key = label_map[structure_to_label]
-                                # 创建一个与 3D 图像相同大小的 False 掩码
-                                full_mask = np.zeros_like(raw_img_data, dtype=bool)
-                                # 将当前切片的 2D 掩码放入 3D 掩码
-                                full_mask[:, :, slice_idx] = mask
-                                # 将这个 3D 掩码添加到对应结构的列表中
+                                full_mask = np.zeros_like(raw_img_data, dtype=bool) # (H, W, Z)
+                                
+                                # --- !!! 修改：将 (W, H) 掩码转置回 (H, W) ---
+                                full_mask[:, :, slice_idx] = mask_hw.T
+                                # --- 结束修改 ---
+
                                 st.session_state.masks[target_key].append(full_mask)
 
                                 st.success(f"已为“{structure_to_label}”添加一个掩码 (来自切片 {slice_idx})。")
-                                # 分割成功后清除当前切片的点
+                                # ... (清除点并 rerun)
                                 st.session_state.points = []
                                 st.session_state.labels = []
                                 st.session_state.current_click_coords = None
@@ -631,6 +804,7 @@ elif mode == '使用 SAM 2 分割':
                         else:
                              st.error("SAM 模型加载失败，无法进行分割。")
 
+# ... (代码下文) ...
 
         # --- 显示已完成的掩码数量 ---
         st.markdown("---")
@@ -669,31 +843,39 @@ elif mode == '使用 SAM 2 分割':
 
                      # --- 调用分析函数 ---
                      st.info("正在运行接触分析和可视化...")
-                     # 获取侧边栏参数
-                     contour_thickness = st.session_state.get('contour_thickness', 1.5) # 使用 st.session_state 获取侧边栏值
-                     contact_range = st.session_state.get('contact_range', 2)
-                     axis = st.session_state.get('axis', 'z')
-                     do_2d = st.session_state.get('do_2d', True)
-                     do_3d = st.session_state.get('do_3d', True)
-                     do_skeleton = st.session_state.get('do_skeleton', True)
-                     do_3d_render = st.session_state.get('do_3d_render', True)
-
-
-                     results, label_map_dict, raw_ct_data_final, artery_skeleton, vein_skeleton, contact_img_data = perform_full_analysis(
+                     
+                     # --- !!! 修改：从侧边栏全局变量获取最新参数 !!! ---
+                     # (假设侧边栏变量是全局可访问的)
+                     current_contour_thickness = contour_thickness
+                     current_contact_range = contact_range
+                     current_axis = axis
+                     current_do_2d = do_2d
+                     current_do_3d = do_3d
+                     current_do_skeleton = do_skeleton
+                     current_do_3d_render = do_3d_render
+                     
+                     # --- !!! 修改：接收 score 和 label !!! ---
+                     results, label_map_dict, raw_ct_data_final, artery_skeleton, vein_skeleton, contact_img_data, score, label = perform_full_analysis(
                          sam_nifti_bytes,
                          "sam_merged_segmentation.nii.gz",
-                         contour_thickness,
-                         contact_range,
-                         axis,
-                         do_2d,
-                         do_3d,
-                         do_skeleton,
+                         current_contour_thickness,
+                         current_contact_range,
+                         current_axis,
+                         current_do_2d,
+                         current_do_3d,
+                         current_do_skeleton,
                          _raw_ct_bytes=raw_file.getvalue() # 传递原始 CT 数据用于显示
                      )
-                     st.session_state.analysis_results = (results, label_map_dict, raw_ct_data_final, artery_skeleton, vein_skeleton, contact_img_data)
-                     st.session_state.analysis_axis = axis # 保存用于可视化的轴
-                     st.session_state.analysis_do_skeleton = do_skeleton
-                     st.session_state.analysis_do_3d_render = do_3d_render
+                     
+                     # --- !!! 修改：在 session_state 中保存 score 和 label !!! ---
+                     st.session_state.analysis_results = (
+                         results, label_map_dict, raw_ct_data_final, 
+                         artery_skeleton, vein_skeleton, contact_img_data, 
+                         score, label # <-- 新增
+                     )
+                     st.session_state.analysis_axis = current_axis # 保存用于可视化的轴
+                     st.session_state.analysis_do_skeleton = current_do_skeleton
+                     st.session_state.analysis_do_3d_render = current_do_3d_render
 
                      # 标记分析完成并重新运行以显示结果
                      st.session_state.analysis_complete = True
@@ -702,14 +884,55 @@ elif mode == '使用 SAM 2 分割':
 
     # --- 在分析完成后显示结果 ---
     if st.session_state.get('analysis_complete', False):
-        results, label_map_dict, raw_ct_data_final, artery_skeleton, vein_skeleton, contact_img_data = st.session_state.analysis_results
+        
+        # --- !!! 修改：从 session_state 中解包 score 和 label !!! ---
+        results, label_map_dict, raw_ct_data_final, artery_skeleton, vein_skeleton, contact_img_data, score, label = st.session_state.analysis_results
+        
         axis = st.session_state.analysis_axis
         do_skeleton = st.session_state.analysis_do_skeleton
         do_3d_render = st.session_state.analysis_do_3d_render
 
 
         st.header("SAM 2 交互分割后的分析结果")
+        
+        # --- !!! 替换：显示新的评分卡 !!! ---
         display_resectability_recommendation(results)
+        with st.expander("点击查看详细分析数据"):
+            st.json(results)
+        
+        # --- !!! 新增：热力图可视化 (来自用户) !!! ---
+        if "3D" in results and isinstance(results["3D"], dict):
+            
+            try:
+                import plotly.express as px
+                import pandas as pd
+                artery_data = results["3D"].get("artery", [])
+                vein_data = results["3D"].get("vein", [])
+                
+                # 检查数据是否存在，并安全地获取第一个元素的接触比例
+                artery_ratio = artery_data[0].get("contact_ratio", 0) if len(artery_data) > 0 else 0
+                vein_ratio = vein_data[0].get("contact_ratio", 0) if len(vein_data) > 0 else 0
+
+                data = {
+                    "血管类型": ["动脉", "静脉"],
+                    "接触比例": [artery_ratio, vein_ratio]
+                }
+                df = pd.DataFrame(data)
+
+                fig = px.imshow(
+                    df.pivot_table(values="接触比例", index=None, columns="血管类型"),
+                    labels=dict(x="血管类型", y="", color="接触比例"),
+                    color_continuous_scale="Viridis",
+                    title="3D 接触比例热力图"
+                )
+                fig.update_layout(width=500, height=300)
+                st.plotly_chart(fig)
+            except ImportError:
+                st.error("无法生成热力图：缺少 `plotly` 或 `pandas` 库。")
+            except Exception as e:
+                st.warning(f"3D 分析数据不足或格式错误，无法生成可视化图表: {e}")
+        # --- 结束新增热力图 ---
+        
         with st.expander("点击查看详细分析数据"):
             st.json(results)
 
@@ -770,7 +993,7 @@ elif mode == '使用 SAM 2 分割':
                               'raw_img_data', 'raw_img_nii', 'normalized_slices',
                               'sam_raw_file_id', 'analysis_complete', 'analysis_results',
                               'analysis_axis', 'analysis_do_skeleton', 'analysis_do_3d_render',
-                              '_last_click_value_ref']
+                              '_last_click_value_ref', 'sidebar_params'] # <-- 也清空 sidebar_params
              for key in keys_to_reset:
                  if key in st.session_state:
                      del st.session_state[key]

@@ -1,4 +1,4 @@
-# sam_segmenter.py (Using exact paths copied from user's script)
+# sam_segmenter.py (已修正 mask_threshold 错误)
 
 import numpy as np
 import torch
@@ -69,15 +69,6 @@ def load_sam2_model(model_type="sam2.1_hiera_s", checkpoint_name="sam2.1_hiera_s
         if not os.path.exists(checkpoint_path):
             st.error(f"FATAL: Model weights file not found!")
             st.error(f"Ensure '{checkpoint_name}' is in a folder named 'checkpoints' located in the directory where you run `streamlit run ...`")
-            # Or provide an absolute path like you did for the library.
-            # Example absolute path (adjust if needed):
-            # checkpoint_path_abs = os.path.join(sam2_parent_directory, "checkpoints", checkpoint_name)
-            # st.error(f"Also checked absolute path: {checkpoint_path_abs}")
-            # if not os.path.exists(checkpoint_path_abs):
-            #      return None
-            # else:
-            #      checkpoint_path = checkpoint_path_abs # Use absolute if relative fails
-
             return None # Stop if relative path fails as per user script logic
         # st.success("Model weights file found.") # Reduce messages
 
@@ -131,7 +122,7 @@ def run_sam2_prediction(predictor, image_slice, points, labels):
     if rgb_image is None: return None
 
     try:
-        predictor.set_image(rgb_image, image_format='RGB')
+        predictor.set_image(rgb_image) # 移除了 'image_format' 参数
     except Exception as e:
         st.error(f"SAM predictor.set_image failed: {e}"); return None
 
@@ -141,7 +132,9 @@ def run_sam2_prediction(predictor, image_slice, points, labels):
             point_labels=np.array(labels),
             multimask_output=False,
         )
-        return masks[0] > predictor.model.mask_threshold # Assuming threshold is needed
+        # --- !!! 修正点 1 !!! ---
+        # 使用 0.0 作为标准阈值，而不是访问不存在的属性
+        return masks[0] > 0.0 
     except Exception as e:
         st.error(f"SAM predictor.predict failed: {e}"); return None
 
@@ -156,7 +149,7 @@ def run_sam2_refinement_with_mask(predictor, image_slice_numpy, mask_prompt_slic
     if rgb_image is None: return None
 
     try:
-        predictor.set_image(rgb_image, image_format='RGB')
+        predictor.set_image(rgb_image) # 移除了 'image_format' 参数
     except Exception as e:
         st.error(f"SAM predictor.set_image (with mask) failed: {e}"); return None
 
@@ -175,7 +168,9 @@ def run_sam2_refinement_with_mask(predictor, image_slice_numpy, mask_prompt_slic
             mask_input=mask_prompt_torch,
             multimask_output=False
         )
-        return masks[0] > predictor.model.mask_threshold # Assuming threshold is needed
+        # --- !!! 修正点 2 !!! ---
+        # 使用 0.0 作为标准阈值，而不是访问不存在的属性
+        return masks[0] > 0.0 
     except AttributeError as ae:
          st.error(f"Error calling predictor: {ae}. Check SAM2ImagePredictor arguments.")
          return None
