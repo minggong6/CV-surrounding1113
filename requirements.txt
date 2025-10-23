@@ -9,6 +9,9 @@ streamlit
 streamlit-image-coordinates
 torch
 numpy
+os
+cv2
+pip install --upgrade pip
 scipy
 scikit-image
 nibabel
@@ -24,6 +27,7 @@ Pillow
 kimimaro
 cloud-volume
 itk
+pip==25.2
 # Optional / better installed via conda-forge:
 # kimimaro
 # cloud-volume
